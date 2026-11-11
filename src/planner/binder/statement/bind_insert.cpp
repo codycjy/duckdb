@@ -41,6 +41,7 @@
 #include "duckdb/parser/tableref/bound_ref_wrapper.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
+#include "duckdb/parser/expression/window_expression.hpp"
 
 namespace duckdb {
 
@@ -585,14 +586,22 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			cast_star->ReplaceListMutable()[col] = std::move(key);
 		}
 	}
-	if (!cast_star->ReplaceList().empty()) {
-		auto cast_node = make_uniq<SelectNode>();
-		cast_node->select_list.push_back(std::move(cast_star));
-		cast_node->from_table = std::move(source);
-		auto cast_stmt = make_uniq<SelectStatement>();
-		cast_stmt->node = std::move(cast_node);
-		source = make_uniq<SubqueryRef>(std::move(cast_stmt), "excluded");
+	string rowid_name_str = "__duckdb_insert_rowid";
+	while (table.ColumnExists(Identifier(rowid_name_str))) {
+		rowid_name_str += "_";
 	}
+	Identifier rowid_name(rowid_name_str);
+	auto cast_node = make_uniq<SelectNode>();
+	cast_node->select_list.push_back(std::move(cast_star));
+	auto row_number = make_uniq<WindowExpression>(SYSTEM_CATALOG, DEFAULT_SCHEMA, "row_number");
+	row_number->WindowStartMutable() = WindowBoundary::UNBOUNDED_PRECEDING;
+	row_number->WindowEndMutable() = WindowBoundary::CURRENT_ROW_RANGE;
+	row_number->SetAlias(rowid_name);
+	cast_node->select_list.push_back(std::move(row_number));
+	cast_node->from_table = std::move(source);
+	auto cast_stmt = make_uniq<SelectStatement>();
+	cast_stmt->node = std::move(cast_node);
+	source = make_uniq<SubqueryRef>(std::move(cast_stmt), "excluded");
 
 	// push DISTINCT ON(unique_columns)
 	for (auto &distinct_on_columns : all_distinct_on_columns) {
@@ -625,11 +634,24 @@ unique_ptr<MergeIntoStatement> Binder::GenerateMergeInto(InsertQueryNode &node, 
 			distinct->distinct_on_targets.push_back(std::move(unique_null_key));
 		}
 		select_node->modifiers.push_back(std::move(distinct));
+		auto order = make_uniq<OrderModifier>();
+		order->orders.emplace_back(OrderType::ASCENDING, OrderByNullType::ORDER_DEFAULT,
+		                           make_uniq<ColumnRefExpression>(rowid_name));
+		select_node->modifiers.push_back(std::move(order));
 		select_node->select_list.push_back(make_uniq<StarExpression>());
 		select_node->from_table = std::move(source);
 		distinct_stmt->node = std::move(select_node);
 		source = make_uniq<SubqueryRef>(std::move(distinct_stmt), "excluded");
 	}
+
+	auto exclude_star = make_uniq<StarExpression>();
+	exclude_star->ExcludeListMutable().insert(QualifiedColumnName(rowid_name));
+	auto exclude_node = make_uniq<SelectNode>();
+	exclude_node->select_list.push_back(std::move(exclude_star));
+	exclude_node->from_table = std::move(source);
+	auto exclude_stmt = make_uniq<SelectStatement>();
+	exclude_stmt->node = std::move(exclude_node);
+	source = make_uniq<SubqueryRef>(std::move(exclude_stmt), "excluded");
 
 	merge_into->node->source = std::move(source);
 

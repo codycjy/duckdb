@@ -10,7 +10,26 @@ INSERT OR IGNORE INTO tbl VALUES (1, 1), (2, 1);
 ----
 1
 
-query I
-SELECT uniq FROM tbl
+query II
+SELECT id, uniq FROM tbl
 ----
-1
+1	1
+
+# Issue #28288: INSERT OR IGNORE with rows that conflict with each other keeps the same row regardless of thread count
+foreach threads 1 2 4
+
+statement ok
+SET threads = {threads};
+
+statement ok
+CREATE OR REPLACE TABLE t(id INTEGER PRIMARY KEY, c0 DATE UNIQUE);
+
+statement ok
+INSERT OR IGNORE INTO t VALUES (1, DATE '2000-02-29'), (2, DATE '2000-02-29'), (2, DATE '2000-01-02');
+
+query II
+SELECT * FROM t;
+----
+1	2000-02-29
+
+endloop
