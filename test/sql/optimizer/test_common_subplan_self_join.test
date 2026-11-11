@@ -74,3 +74,80 @@ JOIN (SELECT key, length(s) v FROM self_input) rhs ON lhs.key < rhs.key;
 
 statement ok
 SET disabled_optimizers='';
+
+# Self-join subqueries where one filter stays above its scan and each join outputs a different side's column
+statement ok
+CREATE TABLE filtered_self(k INTEGER, a INTEGER, s VARCHAR, n INTEGER);
+
+statement ok
+INSERT INTO filtered_self VALUES (1, NULL, 'b', -200), (1, 5, 'z', 100);
+
+query II
+SELECT (SELECT sum(y.a) FROM filtered_self x JOIN filtered_self y ON x.k = y.k WHERE regexp_matches(x.s, '^[a-c]') AND x.n * 1.5 < 0),
+       (SELECT sum(x.a) FROM filtered_self x JOIN filtered_self y ON x.k = y.k WHERE regexp_matches(x.s, '^[a-c]') AND x.n * 1.5 < 0);
+----
+5	NULL
+
+# Star joins where the common subplan joins two reads of u; the duplicate must read the columns of the corresponding read
+statement ok
+CREATE TABLE t(a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO t VALUES (0, 0), (1, 1), (2, 0);
+
+statement ok
+CREATE TABLE u(a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO u VALUES (0, 1), (1, 0);
+
+query II
+SELECT count(*), sum(x11.a) FROM u x0, u x1, t x2, t x3, u x4, u x5, t x6, u x7, u x8, t x9, u x10, t x11 WHERE x1.a = x0.b AND x2.b = x0.b AND x3.b = x0.b AND x4.a = x0.b AND x5.a = x0.b AND x6.a = x0.b AND x7.b = x0.b AND x8.a = x0.b AND x9.b = x0.b AND x10.b = x0.b AND x11.a = x0.a;
+----
+9	8
+
+statement ok
+SET approximate_join_order_threshold=2
+
+query II
+SELECT count(*), sum(x8.a) FROM u x0, t x1, u x2, t x3, u x4, t x5, u x6, t x7, u x8 WHERE x1.b = x0.b AND x2.b = x0.a AND x3.b = x0.b AND x4.a = x0.b AND x5.b = x0.a AND x6.b = x0.b AND x7.a = x0.a AND x8.a = x0.b;
+----
+6	2
+
+query II
+SELECT count(*), sum(x9.a) FROM u x0, u x1, t x2, t x3, t x4, u x5, t x6, u x7, u x8, u x9 WHERE x1.b = x0.a AND x2.a = x0.a AND x3.a = x0.b AND x4.b = x0.b AND x5.a = x0.b AND x6.b = x0.b AND x7.b = x0.a AND x8.b = x0.a AND x9.a = x0.a;
+----
+5	4
+
+statement ok
+RESET approximate_join_order_threshold
+
+statement ok
+CREATE TABLE s AS SELECT range a, range % 7 b, range % 3 c FROM range(100);
+
+statement ok
+CREATE TABLE v AS SELECT range a, range % 5 b, range % 4 c FROM range(50);
+
+# Duplicate self-joins that expose different columns of the two reads, in a different order
+query II
+SELECT sum(x.c), sum(y.c) FROM s x JOIN s y ON x.a = y.b
+UNION ALL
+SELECT sum(y.c), NULL FROM s x JOIN s y ON x.a = y.b
+UNION ALL
+SELECT sum(y.c * 10 + x.c), sum(y.a) FROM s x JOIN s y ON x.a = y.b
+----
+85	99
+99	NULL
+1075	4950
+
+# Nested common subplans: the reads of the self-join are shared, as is the join on top of it
+query III
+SELECT count(*), sum(w.xb), sum(w.yc) FROM (SELECT DISTINCT x.b xb, y.c yc FROM v x JOIN v y ON x.a = y.b) w
+UNION ALL
+SELECT count(*), sum(w.yc), sum(z.b) FROM s z JOIN (SELECT DISTINCT x.b xb, y.c yc FROM v x JOIN v y ON x.a = y.b) w ON z.a = w.xb
+UNION ALL
+SELECT count(*), sum(w.yc), sum(z.b) FROM s z JOIN (SELECT DISTINCT x.b xb, y.c yc FROM v x JOIN v y ON x.a = y.b) w ON z.a = w.xb
+----
+20	40	30
+20	30	40
+20	30	40

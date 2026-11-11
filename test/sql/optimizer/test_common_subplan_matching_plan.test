@@ -269,3 +269,46 @@ SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHER
        (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 60 AND d.g = 0);
 ----
 logical_opt	<!REGEX>:.*COMPARISON_JOIN.*COMPARISON_JOIN.*COMPARISON_JOIN.*
+
+# Self-joins where duplicates expose different columns of the two reads still share a single producer
+statement ok
+CREATE TABLE self_s AS SELECT range a, range % 7 b, range % 3 c FROM range(100);
+
+statement ok
+CREATE TABLE self_v AS SELECT range a, range % 5 b, range % 4 c FROM range(50);
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT count(*) FROM self_s x JOIN self_s y ON x.a = y.a
+UNION ALL
+SELECT count(*) FROM self_s x JOIN self_s y ON x.a = y.a;
+----
+logical_opt	<REGEX>:(?:.*CTE_SCAN){2}.*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT count(*) FROM self_s x JOIN self_s y ON x.a = y.a
+UNION ALL
+SELECT count(*) FROM self_s x JOIN self_s y ON x.a = y.a;
+----
+logical_opt	<!REGEX>:.*(?:AGGREGATE|COMPARISON_JOIN).*(?:AGGREGATE|COMPARISON_JOIN).*(?:AGGREGATE|COMPARISON_JOIN).*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT sum(x.c), sum(y.c) FROM self_s x JOIN self_s y ON x.a = y.b
+UNION ALL
+SELECT sum(y.c), NULL FROM self_s x JOIN self_s y ON x.a = y.b
+UNION ALL
+SELECT sum(y.c * 10 + x.c), sum(y.a) FROM self_s x JOIN self_s y ON x.a = y.b;
+----
+logical_opt	<REGEX>:(?:.*CTE_SCAN){2}.*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT count(*), sum(w.xb), sum(w.yc) FROM (SELECT DISTINCT x.b xb, y.c yc FROM self_v x JOIN self_v y ON x.a = y.b) w
+UNION ALL
+SELECT count(*), sum(w.yc), sum(z.b) FROM self_s z JOIN (SELECT DISTINCT x.b xb, y.c yc FROM self_v x JOIN self_v y ON x.a = y.b) w ON z.a = w.xb
+UNION ALL
+SELECT count(*), sum(w.yc), sum(z.b) FROM self_s z JOIN (SELECT DISTINCT x.b xb, y.c yc FROM self_v x JOIN self_v y ON x.a = y.b) w ON z.a = w.xb;
+----
+logical_opt	<REGEX>:(?:.*"CTE"){2}.*(?:.*CTE_SCAN){4}.*
