@@ -97,7 +97,7 @@ void CSVFileScan::SetStart() {
 		start_iterator.first_one = true;
 		return;
 	}
-	SkipScanner skip_scanner(buffer_manager, state_machine, error_handler, rows_to_skip);
+	SkipScanner skip_scanner(buffer_manager, state_machine, error_handler, rows_to_skip, true);
 	skip_scanner.ParseChunk();
 	skipped_rows = skip_scanner.GetLinesRead() - rows_to_skip;
 	start_iterator = skip_scanner.GetIterator();

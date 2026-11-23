@@ -47,7 +47,7 @@ public:
 class SkipScanner : public BaseScanner {
 public:
 	SkipScanner(shared_ptr<CSVBufferManager> buffer_manager, const shared_ptr<CSVStateMachine> &state_machine,
-	            shared_ptr<CSVErrorHandler> error_handler, idx_t rows_to_skip);
+	            shared_ptr<CSVErrorHandler> error_handler, idx_t rows_to_skip, bool reset_buffers = false);
 
 	SkipResult &ParseChunk() override;
 
@@ -59,6 +59,7 @@ private:
 	void FinalizeChunkProcess() override;
 
 	SkipResult result;
+	bool reset_buffers;
 };
 
 } // namespace duckdb

@@ -97,10 +97,8 @@ shared_ptr<CSVBufferHandle> CSVBuffer::CreatePin() {
 	auto &buffer_manager = BufferManager::GetBufferManager(context);
 	auto pinned = make_shared_ptr<CSVBufferHandle>(buffer_manager.Pin(block), actual_buffer_size, requested_size,
 	                                               last_buffer, buffer_idx);
-	if (random_access) {
-		// Random-access buffers can always be re-read
-		Unpin();
-	}
+	// Release the initial load pin; random-access buffers re-read and sequential buffers spill if evicted
+	Unpin();
 	return pinned;
 }
 

@@ -1785,6 +1785,9 @@ void StringValueScanner::FinishMoveToNextBuffer(shared_ptr<CSVBufferHandle> next
 	cur_buffer_handle = std::move(next_buffer);
 	iterator.pos.buffer_idx++;
 	result.buffer_handles[cur_buffer_handle->buffer_idx] = cur_buffer_handle;
+	if (buffer_tracker && !iterator.IsBoundarySet()) {
+		buffer_tracker = make_shared_ptr<CSVBufferUsage>(*buffer_manager, iterator.pos.buffer_idx);
+	}
 
 	iterator.pos.buffer_pos = 0;
 	buffer_handle_ptr = cur_buffer_handle->Ptr();
@@ -1792,6 +1795,7 @@ void StringValueScanner::FinishMoveToNextBuffer(shared_ptr<CSVBufferHandle> next
 	ProcessOverBufferValue();
 	result.buffer_ptr = buffer_handle_ptr;
 	result.buffer_size = cur_buffer_handle->actual_size;
+	previous_buffer_handle.reset();
 }
 
 void StringValueResult::SkipBOM() const {

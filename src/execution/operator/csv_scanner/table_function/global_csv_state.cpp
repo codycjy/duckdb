@@ -110,8 +110,10 @@ bool CSVGlobalState::Next(shared_ptr<CSVFileScan> &current_file_ptr, CSVLocalSta
 		// initialize the boundary for this file
 		current_boundary = current_file.start_iterator;
 		current_boundary.SetCurrentBoundaryToPosition(single_threaded, current_file.options);
-		current_buffer_in_use =
-		    make_shared_ptr<CSVBufferUsage>(*current_file.buffer_manager, current_boundary.GetBufferIdx());
+		if (!single_threaded) {
+			current_buffer_in_use =
+			    make_shared_ptr<CSVBufferUsage>(*current_file.buffer_manager, current_boundary.GetBufferIdx());
+		}
 		initialized = true;
 	} else {
 		// produce the next boundary for this file
@@ -120,15 +122,20 @@ bool CSVGlobalState::Next(shared_ptr<CSVFileScan> &current_file_ptr, CSVLocalSta
 			return false;
 		}
 	}
-	if (!current_buffer_in_use || current_buffer_in_use->buffer_idx != current_boundary.GetBufferIdx()) {
-		current_buffer_in_use =
+	if (single_threaded) {
+		lstate.buffer_tracker =
 		    make_shared_ptr<CSVBufferUsage>(*current_file.buffer_manager, current_boundary.GetBufferIdx());
+	} else {
+		if (!current_buffer_in_use || current_buffer_in_use->buffer_idx != current_boundary.GetBufferIdx()) {
+			current_buffer_in_use =
+			    make_shared_ptr<CSVBufferUsage>(*current_file.buffer_manager, current_boundary.GetBufferIdx());
+		}
+		lstate.buffer_tracker = current_buffer_in_use;
 	}
 	++current_file.started_tasks;
 	// The scanner itself is constructed by the decoding thread when the claim is first scanned
 	lstate.scanner_idx = scanner_idx++;
 	lstate.iterator = current_boundary;
-	lstate.buffer_tracker = current_buffer_in_use;
 	lstate.file_scan = current_file_ptr;
 	lstate.claim_state = CSVLocalState::ClaimState::PENDING;
 	return true;

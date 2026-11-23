@@ -94,6 +94,7 @@ AdaptiveSnifferResult CSVSniffer::MinimalSniff() {
 	auto &sniffed_column_counts = count_scanner.ParseChunk();
 	if (sniffed_column_counts.result_position == 0) {
 		// The file is an empty file, we just return
+		buffer_manager->sniffing = false;
 		return {{}, {}, false};
 	}
 
@@ -144,6 +145,7 @@ AdaptiveSnifferResult CSVSniffer::MinimalSniff() {
 		}
 		detected_types.push_back(d_type);
 	}
+	buffer_manager->sniffing = false;
 	return {detected_types, names, sniffed_column_counts.result_position > 1};
 }
 

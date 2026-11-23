@@ -28,8 +28,6 @@ private:
 	void Initialize();
 	//! Reads next buffer in reference to cached_buffers.front()
 	bool ReadNextAndCacheIt();
-	//! Releases the chain's own pin on the predecessor of an accessed buffer
-	void UnpinPrevious(const idx_t pos);
 
 	//! The last buffer it was accessed
 	shared_ptr<CSVBuffer> last_buffer;

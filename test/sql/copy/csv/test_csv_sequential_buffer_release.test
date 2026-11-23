@@ -1,0 +1,183 @@
+# name: test/sql/copy/csv/test_csv_sequential_buffer_release.test
+# description: Test that sequential CSV scans release consumed buffers instead of accumulating them in memory or spilling
+# group: [csv]
+
+statement ok
+SET threads = 2;
+
+# ~24 MiB uncompressed gzip (~96 buffers of 256 KiB each)
+statement ok
+COPY (
+	SELECT i AS id, md5(i::VARCHAR) AS a, md5((i + 1)::VARCHAR) AS b, repeat('x', 40) AS c
+	FROM range(220000) t(i)
+) TO '{TEST_DIR}/seq_release.csv.gz' (HEADER false, COMPRESSION gzip);
+
+# Same data with non-UTF-8 encoding (forces CSVSequentialBufferManager even on uncompressed files)
+statement ok
+COPY (
+	SELECT i AS id, md5(i::VARCHAR) AS a, repeat('e', 80) AS c
+	FROM range(220000) t(i)
+) TO '{TEST_DIR}/seq_release_latin1.csv' (HEADER false);
+
+# Enforce tight memory limit and forbid spilling to temp directory
+statement ok
+SET memory_limit = '16MB';
+
+statement ok
+SET max_temp_directory_size = '0B';
+
+# 1. parallel = false with default auto_detect = true must neither OOM nor spill
+query II
+SELECT count(*), sum(length(column1))
+FROM read_csv('{TEST_DIR}/seq_release.csv.gz', parallel = false, buffer_size = 262144);
+----
+220000	7040000
+
+# 2. parallel = false with auto_detect = false must neither OOM nor spill
+query II
+SELECT count(*), sum(length(a))
+FROM read_csv('{TEST_DIR}/seq_release.csv.gz', parallel = false, auto_detect = false, buffer_size = 262144,
+              columns = {'id': 'BIGINT', 'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'});
+----
+220000	7040000
+
+# 3. Non-UTF-8 encoding with parallel = false must neither OOM nor spill
+query II
+SELECT count(*), sum(length(column1))
+FROM read_csv('{TEST_DIR}/seq_release_latin1.csv', parallel = false, encoding = 'latin-1', buffer_size = 262144);
+----
+220000	7040000
+
+# 4. skip spanning many buffers must release skipped buffers for both parallel = false and parallel = true
+foreach par false true
+
+query II
+SELECT count(*), min(id)
+FROM read_csv('{TEST_DIR}/seq_release.csv.gz', parallel = {par}, auto_detect = false, skip = 150000, buffer_size = 262144,
+              columns = {'id': 'BIGINT', 'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'});
+----
+70000	150000
+
+endloop
+
+# With auto_detect = true, sniffing multiple dialect candidates over skipped rows may spill under a tight limit, but must not OOM
+statement ok
+RESET max_temp_directory_size;
+
+foreach par false true
+
+query II
+SELECT count(*), min(column0)
+FROM read_csv('{TEST_DIR}/seq_release.csv.gz', parallel = {par}, skip = 150000, buffer_size = 262144);
+----
+70000	150000
+
+endloop
+
+# 5. Many gzip files (> 2 * threads triggers single_threaded per-file mode even with parallel = true)
+statement ok
+RESET memory_limit;
+
+statement ok
+RESET max_temp_directory_size;
+
+foreach f 0 1 2 3 4
+
+statement ok
+COPY (
+	SELECT i AS id, md5(i::VARCHAR) AS a, repeat('y', 60) AS c
+	FROM range(60000) t(i)
+) TO '{TEST_DIR}/many_{f}.csv.gz' (HEADER false, COMPRESSION gzip);
+
+endloop
+
+statement ok
+SET memory_limit = '16MB';
+
+statement ok
+SET max_temp_directory_size = '0B';
+
+query II
+SELECT count(*), sum(length(column1))
+FROM read_csv('{TEST_DIR}/many_*.csv.gz', parallel = true, buffer_size = 262144);
+----
+300000	9600000
+
+statement ok
+RESET memory_limit;
+
+statement ok
+RESET max_temp_directory_size;
+
+# 6. store_rejects / ignore_errors with bad rows across multiple buffers in parallel = false
+statement ok
+COPY (
+	SELECT CASE WHEN i IN (500, 1500, 3500) THEN 'bad_int' ELSE i::VARCHAR END AS id,
+	       repeat('z', 40) AS pad
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/rejects_seq.csv.gz' (HEADER true, COMPRESSION gzip);
+
+query II
+SELECT count(*), sum(id)
+FROM read_csv('{TEST_DIR}/rejects_seq.csv.gz', parallel = false, auto_detect = false, buffer_size = 256,
+              header = true, columns = {'id': 'INTEGER', 'pad': 'VARCHAR'}, store_rejects = true);
+----
+4997	12492000
+
+query II
+SELECT count(*), count(*) FILTER (WHERE csv_line LIKE 'bad_int,%') FROM reject_errors;
+----
+3	3
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+# 7. Tiny buffer_size with straddling values, skip, and recursive CTE rescan (full scan and LIMIT)
+statement ok
+COPY (
+	SELECT i AS id, repeat('a', 30) AS payload
+	FROM range(100) t(i)
+) TO '{TEST_DIR}/tiny_seq.csv.gz' (HEADER true, COMPRESSION gzip);
+
+query II
+SELECT count(*), sum(id)
+FROM read_csv('{TEST_DIR}/tiny_seq.csv.gz', parallel = false, buffer_size = 64);
+----
+100	4950
+
+query II
+SELECT count(*), min(column0)
+FROM read_csv('{TEST_DIR}/tiny_seq.csv.gz', parallel = false, buffer_size = 64, skip = 50);
+----
+51	49
+
+query II
+WITH RECURSIVE r(step, cnt) AS (
+	SELECT 0, 0::BIGINT
+	UNION ALL
+	SELECT r.step + 1, (SELECT count(*) FROM read_csv('{TEST_DIR}/tiny_seq.csv.gz', parallel = false, buffer_size = 64))
+	FROM r
+	WHERE r.step < 2
+)
+SELECT step, cnt FROM r ORDER BY step;
+----
+0	0
+1	100
+2	100
+
+query II
+WITH RECURSIVE r(step, val) AS (
+	SELECT 0, -1::BIGINT
+	UNION ALL
+	SELECT r.step + 1, (SELECT id FROM read_csv('{TEST_DIR}/tiny_seq.csv.gz', parallel = false, buffer_size = 64) LIMIT 1)
+	FROM r
+	WHERE r.step < 2
+)
+SELECT step, val FROM r ORDER BY step;
+----
+0	-1
+1	0
+2	0

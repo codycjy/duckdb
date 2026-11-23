@@ -56,9 +56,9 @@ bool SkipResult::EmptyLine(SkipResult &result, const idx_t buffer_pos) {
 }
 
 SkipScanner::SkipScanner(shared_ptr<CSVBufferManager> buffer_manager, const shared_ptr<CSVStateMachine> &state_machine,
-                         shared_ptr<CSVErrorHandler> error_handler, idx_t rows_to_skip)
+                         shared_ptr<CSVErrorHandler> error_handler, idx_t rows_to_skip, bool reset_buffers_p)
     : BaseScanner(std::move(buffer_manager), state_machine, std::move(error_handler)),
-      result(states, *state_machine, rows_to_skip) {
+      result(states, *state_machine, rows_to_skip), reset_buffers(reset_buffers_p) {
 }
 
 SkipResult &SkipScanner::ParseChunk() {
@@ -79,6 +79,9 @@ void SkipScanner::FinalizeChunkProcess() {
 	while (!FinishedFile() && result.row_count < result.rows_to_skip) {
 		cur_buffer_handle = buffer_manager->GetBuffer(++iterator.pos.buffer_idx);
 		if (cur_buffer_handle) {
+			if (reset_buffers) {
+				buffer_manager->ResetBuffer(iterator.pos.buffer_idx - 1);
+			}
 			iterator.pos.buffer_pos = 0;
 			buffer_handle_ptr = cur_buffer_handle->Ptr();
 			Process(result);

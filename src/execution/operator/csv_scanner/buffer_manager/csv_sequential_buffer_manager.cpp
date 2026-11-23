@@ -27,6 +27,7 @@ bool CSVSequentialBufferManager::ReadNextAndCacheIt() {
 				last_buffer->last_buffer = true;
 				return false;
 			}
+			last_buffer->Unpin();
 			last_buffer = std::move(maybe_last_buffer);
 			cached_buffers.emplace_back(last_buffer);
 			return true;
@@ -37,14 +38,12 @@ bool CSVSequentialBufferManager::ReadNextAndCacheIt() {
 
 shared_ptr<CSVBufferHandle> CSVSequentialBufferManager::GetBuffer(const idx_t pos) {
 	lock_guard<mutex> parallel_lock(main_mutex);
-	if (pos == 0 && done && cached_buffers.empty()) {
+	if (pos == 0 && (cached_buffers.empty() || !cached_buffers[0])) {
 		if (is_pipe) {
 			throw InvalidInputException("Recursive CTEs are not allowed when using piped csv files");
 		}
-		// This is a recursive CTE, we have to reset out whole buffer
-		done = false;
-		file_handle->Reset();
-		Initialize();
+		// This is a recursive CTE, we have to reset our whole buffer
+		ResetBufferManager();
 	}
 	while (pos >= cached_buffers.size()) {
 		if (done) {
@@ -54,29 +53,16 @@ shared_ptr<CSVBufferHandle> CSVSequentialBufferManager::GetBuffer(const idx_t po
 			done = true;
 		}
 	}
-	UnpinPrevious(pos);
 	return cached_buffers[pos]->Pin(*file_handle);
-}
-
-void CSVSequentialBufferManager::UnpinPrevious(const idx_t pos) {
-	if (pos != 0 && (sniffing || file_handle->CanSeek() || per_file_single_threaded)) {
-		// We don't need to unpin the buffers here if we are not sniffing since we
-		// control it per-thread on the scan
-		if (cached_buffers[pos - 1]) {
-			cached_buffers[pos - 1]->Unpin();
-		}
-	}
 }
 
 CSVBufferResidency CSVSequentialBufferManager::GetBufferResidency(const idx_t pos,
                                                                   shared_ptr<CSVBufferHandle> &handle) {
 	lock_guard<mutex> parallel_lock(main_mutex);
 	if (pos < cached_buffers.size()) {
-		D_ASSERT(cached_buffers[pos]);
-		if (!cached_buffers[pos]->IsInMemory()) {
+		if (!cached_buffers[pos] || !cached_buffers[pos]->IsInMemory()) {
 			return CSVBufferResidency::NEEDS_LOAD;
 		}
-		UnpinPrevious(pos);
 		handle = cached_buffers[pos]->Pin(*file_handle);
 		return CSVBufferResidency::IN_MEMORY;
 	}
