@@ -1,0 +1,211 @@
+# name: test/sql/types/geo/geometry_shred_filter.test
+# description: Test pushed-down filters on persisted shredded and legacy GEOMETRY columns
+# group: [geo]
+
+require noforcestorage
+
+statement ok
+SET geometry_minimum_shredding_size = 10;
+
+statement ok
+ATTACH '{TEST_DIR}/geo_shred_filter.db' AS geo_db (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE geo_db;
+
+# Multi-row-group persisted table with CRS and shredded POLYGONs
+statement ok
+CREATE TABLE polys AS
+SELECT
+	i,
+	CASE
+		WHEN i % 50 = 0 THEN NULL
+		WHEN i % 10 = 0 THEN 'POLYGON((0 0,10 0,10 10,0 10,0 0),(2 2,3 2,3 3,2 3,2 2))'::GEOMETRY('OGC:CRS84')
+		ELSE 'POLYGON((0 0,1 0,1 1,0 1,0 0))'::GEOMETRY('OGC:CRS84')
+	END AS g
+FROM range(6144) r(i);
+
+statement ok
+CHECKPOINT;
+
+# Verify filters match FILTER (WHERE ...) across single-threaded and multi-threaded scans
+foreach threads 1 4
+
+statement ok
+SET threads = {threads};
+
+query II
+SELECT
+	(SELECT count(*) FROM polys WHERE length(CAST(g AS GEOMETRY)::VARCHAR) > 40),
+	(SELECT count(*) FILTER (WHERE length(CAST(g AS GEOMETRY)::VARCHAR) > 40) FROM polys);
+----
+492	492
+
+query II
+SELECT
+	(SELECT count(*) FROM polys WHERE length(g::VARCHAR) > 40),
+	(SELECT count(*) FILTER (WHERE length(g::VARCHAR) > 40) FROM polys);
+----
+492	492
+
+query II
+SELECT
+	(SELECT count(*) FROM polys WHERE g && 'POLYGON((5 5,6 5,6 6,5 6,5 5))'::GEOMETRY),
+	(SELECT count(*) FILTER (WHERE g && 'POLYGON((5 5,6 5,6 6,5 6,5 5))'::GEOMETRY) FROM polys);
+----
+492	492
+
+query II
+SELECT
+	(SELECT count(*) FROM polys WHERE g = 'POLYGON((0 0,10 0,10 10,0 10,0 0),(2 2,3 2,3 3,2 3,2 2))'::GEOMETRY('OGC:CRS84')),
+	(SELECT count(*) FILTER (WHERE g = 'POLYGON((0 0,10 0,10 10,0 10,0 0),(2 2,3 2,3 3,2 3,2 2))'::GEOMETRY('OGC:CRS84')) FROM polys);
+----
+492	492
+
+query II
+SELECT
+	(SELECT count(*) FROM polys WHERE g IS NULL),
+	(SELECT count(*) FILTER (WHERE g IS NULL) FROM polys);
+----
+123	123
+
+query II
+SELECT
+	(SELECT count(*) FROM polys WHERE g IS NOT NULL),
+	(SELECT count(*) FILTER (WHERE g IS NOT NULL) FROM polys);
+----
+6021	6021
+
+query II
+SELECT
+	(SELECT count(*) FROM polys WHERE NOT (g IS DISTINCT FROM 'POLYGON((0 0,10 0,10 10,0 10,0 0),(2 2,3 2,3 3,2 3,2 2))'::GEOMETRY('OGC:CRS84'))),
+	(SELECT count(*) FILTER (WHERE NOT (g IS DISTINCT FROM 'POLYGON((0 0,10 0,10 10,0 10,0 0),(2 2,3 2,3 3,2 3,2 2))'::GEOMETRY('OGC:CRS84'))) FROM polys);
+----
+492	492
+
+endloop
+
+# All 6 shreddable geometry types (plain GEOMETRY and CRS GEOMETRY) with NULLs
+statement ok
+CREATE TABLE all_shredded AS
+SELECT
+	CASE WHEN i % 40 = 0 THEN NULL WHEN i % 10 = 0 THEN 'POINT(10 10)'::GEOMETRY ELSE 'POINT(1 1)'::GEOMETRY END AS pt,
+	CASE WHEN i % 40 = 0 THEN NULL WHEN i % 10 = 0 THEN 'POINT(10 10)'::GEOMETRY('OGC:CRS84') ELSE 'POINT(1 1)'::GEOMETRY('OGC:CRS84') END AS pt_crs,
+	CASE WHEN i % 40 = 0 THEN NULL WHEN i % 10 = 0 THEN 'LINESTRING(0 0,10 10,20 20)'::GEOMETRY ELSE 'LINESTRING(0 0,1 1)'::GEOMETRY END AS ls,
+	CASE WHEN i % 40 = 0 THEN NULL WHEN i % 10 = 0 THEN 'LINESTRING(0 0,10 10,20 20)'::GEOMETRY('OGC:CRS84') ELSE 'LINESTRING(0 0,1 1)'::GEOMETRY('OGC:CRS84') END AS ls_crs,
+	CASE WHEN i % 40 = 0 THEN NULL WHEN i % 10 = 0 THEN 'POLYGON((0 0,10 0,10 10,0 10,0 0))'::GEOMETRY ELSE 'POLYGON((0 0,1 0,1 1,0 1,0 0))'::GEOMETRY END AS pg,
+	CASE WHEN i % 40 = 0 THEN NULL WHEN i % 10 = 0 THEN 'MULTIPOINT((0 0),(10 10),(20 20))'::GEOMETRY ELSE 'MULTIPOINT((0 0))'::GEOMETRY END AS mp,
+	CASE WHEN i % 40 = 0 THEN NULL WHEN i % 10 = 0 THEN 'MULTIPOINT((0 0),(10 10),(20 20))'::GEOMETRY('OGC:CRS84') ELSE 'MULTIPOINT((0 0))'::GEOMETRY('OGC:CRS84') END AS mp_crs,
+	CASE WHEN i % 40 = 0 THEN NULL WHEN i % 10 = 0 THEN 'MULTILINESTRING((0 0,10 10),(20 20,30 30))'::GEOMETRY ELSE 'MULTILINESTRING((0 0,1 1))'::GEOMETRY END AS mls,
+	CASE WHEN i % 40 = 0 THEN NULL WHEN i % 10 = 0 THEN 'MULTIPOLYGON(((0 0,10 0,10 10,0 10,0 0)),((20 20,30 20,30 30,20 30,20 20)))'::GEOMETRY ELSE 'MULTIPOLYGON(((0 0,1 0,1 1,0 1,0 0)))'::GEOMETRY END AS mpg
+FROM range(4096) r(i);
+
+statement ok
+CHECKPOINT;
+
+# Reopen to test InitializeColumn path as well as immediate post-CHECKPOINT scans
+foreach phase before_reopen after_reopen
+
+query IIIIIIIII
+SELECT
+	(SELECT count(*) FROM all_shredded WHERE length(pt::VARCHAR) > 11),
+	(SELECT count(*) FROM all_shredded WHERE length(CAST(pt_crs AS GEOMETRY)::VARCHAR) > 11),
+	(SELECT count(*) FROM all_shredded WHERE length(ls::VARCHAR) > 25),
+	(SELECT count(*) FROM all_shredded WHERE length(CAST(ls_crs AS GEOMETRY)::VARCHAR) > 25),
+	(SELECT count(*) FROM all_shredded WHERE pg = 'POLYGON((0 0,10 0,10 10,0 10,0 0))'::GEOMETRY),
+	(SELECT count(*) FROM all_shredded WHERE length(mp::VARCHAR) > 20),
+	(SELECT count(*) FROM all_shredded WHERE length(CAST(mp_crs AS GEOMETRY)::VARCHAR) > 20),
+	(SELECT count(*) FROM all_shredded WHERE length(mls::VARCHAR) > 30),
+	(SELECT count(*) FROM all_shredded WHERE length(mpg::VARCHAR) > 50);
+----
+307	307	307	307	307	307	307	307	307
+
+query IIIIIIIII
+SELECT
+	(SELECT count(*) FROM all_shredded WHERE pt IS NULL),
+	(SELECT count(*) FROM all_shredded WHERE pt_crs IS NULL),
+	(SELECT count(*) FROM all_shredded WHERE ls IS NULL),
+	(SELECT count(*) FROM all_shredded WHERE ls_crs IS NULL),
+	(SELECT count(*) FROM all_shredded WHERE pg IS NULL),
+	(SELECT count(*) FROM all_shredded WHERE mp IS NULL),
+	(SELECT count(*) FROM all_shredded WHERE mp_crs IS NULL),
+	(SELECT count(*) FROM all_shredded WHERE mls IS NULL),
+	(SELECT count(*) FROM all_shredded WHERE mpg IS NULL);
+----
+103	103	103	103	103	103	103	103	103
+
+query I
+SELECT count(*) FROM polys WHERE length(CAST(g AS GEOMETRY)::VARCHAR) > 40;
+----
+492
+
+statement ok
+USE memory;
+
+statement ok
+DETACH geo_db;
+
+statement ok
+ATTACH '{TEST_DIR}/geo_shred_filter.db' AS geo_db;
+
+statement ok
+USE geo_db;
+
+endloop
+
+statement ok
+USE memory;
+
+statement ok
+DETACH geo_db;
+
+# Legacy v1.4.0 SPATIAL storage format: pushed-down equality/expression filters must not assert or mis-prune
+statement ok
+ATTACH '{TEST_DIR}/geo_legacy_filter.db' AS legacy_geo (ROW_GROUP_SIZE 2048, STORAGE_VERSION 'v1.4.0');
+
+statement ok
+USE legacy_geo;
+
+statement ok
+CREATE TABLE legacy_polys AS
+SELECT
+	CASE
+		WHEN i % 50 = 0 THEN NULL
+		WHEN i % 10 = 0 THEN 'POLYGON((0 0,10 0,10 10,0 10,0 0))'::GEOMETRY
+		ELSE 'POLYGON((0 0,1 0,1 1,0 1,0 0))'::GEOMETRY
+	END AS g
+FROM range(4096) r(i);
+
+statement ok
+CHECKPOINT;
+
+foreach phase before_reopen after_reopen
+
+query IIII
+SELECT
+	(SELECT count(*) FROM legacy_polys WHERE g = 'POLYGON((0 0,10 0,10 10,0 10,0 0))'::GEOMETRY),
+	(SELECT count(*) FROM legacy_polys WHERE length(g::VARCHAR) > 36),
+	(SELECT count(*) FROM legacy_polys WHERE g IS NULL),
+	(SELECT count(*) FROM legacy_polys WHERE g IS NOT NULL);
+----
+328	328	82	4014
+
+statement ok
+USE memory;
+
+statement ok
+DETACH legacy_geo;
+
+statement ok
+ATTACH '{TEST_DIR}/geo_legacy_filter.db' AS legacy_geo;
+
+statement ok
+USE legacy_geo;
+
+endloop
+
+statement ok
+USE memory;
+
+statement ok
+DETACH legacy_geo;

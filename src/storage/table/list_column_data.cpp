@@ -60,6 +60,11 @@ FilterPropagateResult ListColumnData::CheckZonemap(ColumnScanState &state, const
 	return CheckValidityZonemap(state, filter, checked_end, *validity);
 }
 
+FilterPropagateResult ListColumnData::CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+                                                     optional_idx &checked_end) {
+	return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+}
+
 void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
                                         idx_t end_row) {
 	ColumnData::InitializePrefetch(prefetch_state, scan_state, start_row, end_row);

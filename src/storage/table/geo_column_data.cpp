@@ -39,6 +39,24 @@ void GeoColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScan
 	return base_column->InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
 }
 
+FilterPropagateResult GeoColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                  optional_idx &checked_end) {
+	if (storage_type == GeometryStorageType::SPATIAL) {
+		if (!IsDirectNullCheckFilter(filter.filter) || state.child_states.empty() || !state.child_states[0].current) {
+			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+		}
+	}
+	return base_column->CheckZonemap(state, filter, checked_end);
+}
+
+FilterPropagateResult GeoColumnData::CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+                                                    optional_idx &checked_end) {
+	if (storage_type != GeometryStorageType::WKB) {
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	return base_column->CheckZonemapAt(state, filter, row, checked_end);
+}
+
 void GeoColumnData::InitializeChildScanStates(ColumnScanState &state) {
 	// Reset, inner layout might be different
 	state.child_states.clear();

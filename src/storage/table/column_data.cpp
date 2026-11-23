@@ -135,6 +135,7 @@ void ColumnData::InitializeScan(ColumnScanState &state) {
 	state.offset_in_column = state.current ? state.current->GetRowStart() : 0;
 	state.internal_index = state.offset_in_column;
 	state.initialized = false;
+	state.segment_checked = false;
 	state.scan_state.reset();
 	state.last_offset = 0;
 }
@@ -148,6 +149,7 @@ void ColumnData::InitializeScanWithOffset(ColumnScanState &state, idx_t row_idx)
 	state.offset_in_column = row_idx;
 	state.internal_index = state.current->GetRowStart();
 	state.initialized = false;
+	state.segment_checked = false;
 	state.scan_state.reset();
 	state.last_offset = 0;
 }

@@ -28,6 +28,11 @@ public:
 public:
 	idx_t GetMaxEntry() override;
 
+	FilterPropagateResult CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                   optional_idx &checked_end) override;
+	FilterPropagateResult CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+	                                     optional_idx &checked_end) override;
+
 	void InitializeChildScanStates(ColumnScanState &state);
 
 	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,

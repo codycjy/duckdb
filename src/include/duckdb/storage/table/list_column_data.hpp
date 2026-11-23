@@ -41,6 +41,8 @@ public:
 	void SetDataType(ColumnDataType data_type) override;
 	FilterPropagateResult CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
 	                                   optional_idx &checked_end) override;
+	FilterPropagateResult CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+	                                     optional_idx &checked_end) override;
 
 	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
 	                        idx_t end_row) override;
